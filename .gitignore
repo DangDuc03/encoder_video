@@ -1,0 +1,16 @@
+# Node modules
+node_modules/
+
+# System & temp files
+.DS_Store
+Thumbs.db
+*.log
+
+# Video & temp folders
+uploads/
+outputs/
+temp/
+
+# Env & config
+.env
+.vscode/
