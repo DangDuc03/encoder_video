@@ -1,5 +1,6 @@
 const express = require("express");
 const multer = require("multer");
+const ffmpegPath = require("ffmpeg-static");
 const ffmpeg = require("fluent-ffmpeg");
 const axios = require("axios");
 const path = require("path");
@@ -7,14 +8,7 @@ const fs = require("fs-extra");
 const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
 
-ffmpeg.setFfmpegPath(
-  "C:\\Users\\Admin\\Downloads\\FFmpeg\\FFmpeg\\bin\\ffmpeg.exe"
-);
-
-// for railway
-if (process.env.FFMPEG_PATH && process.platform === "win32") {
-  ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH);
-}
+ffmpeg.setFfmpegPath(ffmpegPath); // cross-platform
 
 const app = express();
 const PORT = process.env.PORT || 3000;
