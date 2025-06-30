@@ -166,17 +166,67 @@
 
       .progress-bar {
         width: 100%;
-        height: 10px;
+        height: 20px;
         background: #e9ecef;
-        border-radius: 5px;
+        border-radius: 10px;
         overflow: hidden;
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
       }
 
       .progress-fill {
         height: 100%;
         background: linear-gradient(90deg, #667eea, #764ba2);
         width: 0%;
-        transition: width 0.3s ease;
+        transition: width 0.5s ease;
+        position: relative;
+      }
+
+      .progress-fill::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        right: 0;
+        background-image: linear-gradient(
+          45deg,
+          rgba(255, 255, 255, 0.15) 25%,
+          transparent 25%,
+          transparent 50%,
+          rgba(255, 255, 255, 0.15) 50%,
+          rgba(255, 255, 255, 0.15) 75%,
+          transparent 75%,
+          transparent
+        );
+        background-size: 20px 20px;
+        animation: move 1s linear infinite;
+      }
+
+      @keyframes move {
+        0% {
+          background-position: 0 0;
+        }
+        100% {
+          background-position: 20px 20px;
+        }
+      }
+
+      .progress-text {
+        margin-top: 15px;
+        text-align: center;
+        font-weight: 600;
+        color: #666;
+      }
+
+      .progress-percentage {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-weight: bold;
+        font-size: 14px;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
       }
 
       .result {
@@ -221,6 +271,15 @@
       .emoji {
         font-size: 1.2em;
         margin-right: 5px;
+      }
+
+      .status-details {
+        margin-top: 10px;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 8px;
+        font-size: 12px;
+        color: #666;
       }
     </style>
   </head>
@@ -316,11 +375,16 @@
         <!-- Progress -->
         <div class="progress" id="progress">
           <div class="progress-bar">
-            <div class="progress-fill" id="progress-fill"></div>
+            <div class="progress-fill" id="progress-fill">
+              <div class="progress-percentage" id="progress-percentage">0%</div>
+            </div>
           </div>
-          <p id="progress-text" style="margin-top: 10px; text-align: center">
-            Đang xử lý...
-          </p>
+          <p class="progress-text" id="progress-text">Đang xử lý...</p>
+          <div
+            class="status-details"
+            id="status-details"
+            style="display: none"
+          ></div>
         </div>
 
         <!-- Result -->
@@ -338,6 +402,9 @@
     </div>
 
     <script>
+      let currentProcessId = null;
+      let statusInterval = null;
+
       // Tab switching
       function switchTab(tabName) {
         document
@@ -407,11 +474,14 @@
         const progress = document.getElementById("progress");
         const result = document.getElementById("result");
 
+        // Reset UI
+        result.style.display = "none";
+        resetProgress();
+
         // Show progress
         submitBtn.disabled = true;
         submitBtn.textContent = "🔄 Đang xử lý...";
         progress.style.display = "block";
-        result.style.display = "none";
 
         try {
           const options = {
@@ -428,18 +498,150 @@
           const response = await fetch(endpoint, options);
           const resultData = await response.json();
 
-          if (resultData.success) {
-            showResult("success", resultData.message, resultData.downloadUrl);
+          if (resultData.success && resultData.processId) {
+            // Bắt đầu polling status
+            currentProcessId = resultData.processId;
+            startStatusPolling();
+            updateProgress(0, resultData.message || "Bắt đầu xử lý...");
           } else {
-            showResult("error", resultData.error);
+            showResult("error", resultData.error || "Có lỗi xảy ra");
+            resetUI(submitBtn);
           }
         } catch (error) {
           showResult("error", "Có lỗi xảy ra: " + error.message);
-        } finally {
-          submitBtn.disabled = false;
-          submitBtn.innerHTML = '<span class="emoji">🚀</span> Xử lý Video';
-          progress.style.display = "none";
+          resetUI(submitBtn);
         }
+      }
+
+      // Start status polling
+      function startStatusPolling() {
+        if (statusInterval) {
+          clearInterval(statusInterval);
+        }
+
+        statusInterval = setInterval(async () => {
+          if (!currentProcessId) return;
+
+          try {
+            const response = await fetch(`/api/status/${currentProcessId}`);
+            const status = await response.json();
+
+            if (response.ok) {
+              handleStatusUpdate(status);
+            } else {
+              console.error("Status check failed:", status);
+            }
+          } catch (error) {
+            console.error("Error checking status:", error);
+          }
+        }, 1000); // Check every second
+      }
+
+      // Handle status update
+      function handleStatusUpdate(status) {
+        const {
+          status: currentStatus,
+          progress: progressPercent,
+          message,
+          downloadUrl,
+          error,
+          details,
+        } = status;
+
+        // Update progress
+        updateProgress(progressPercent || 0, message || "Đang xử lý...");
+
+        // Show details if available
+        if (details) {
+          showStatusDetails(details);
+        }
+
+        // Handle completed status
+        if (currentStatus === "completed") {
+          stopStatusPolling();
+          showResult(
+            "success",
+            message || "Xử lý video thành công!",
+            downloadUrl
+          );
+          resetUI();
+        }
+
+        // Handle error status
+        else if (currentStatus === "error") {
+          stopStatusPolling();
+          showResult(
+            "error",
+            error || message || "Có lỗi xảy ra khi xử lý video"
+          );
+          resetUI();
+        }
+      }
+
+      // Stop status polling
+      function stopStatusPolling() {
+        if (statusInterval) {
+          clearInterval(statusInterval);
+          statusInterval = null;
+        }
+        currentProcessId = null;
+      }
+
+      // Update progress display
+      function updateProgress(percent, message) {
+        const progressFill = document.getElementById("progress-fill");
+        const progressText = document.getElementById("progress-text");
+        const progressPercentage = document.getElementById(
+          "progress-percentage"
+        );
+
+        const safePercent = Math.max(0, Math.min(100, percent || 0));
+
+        progressFill.style.width = safePercent + "%";
+        progressPercentage.textContent = Math.round(safePercent) + "%";
+        progressText.textContent = message || "Đang xử lý...";
+      }
+
+      // Show status details
+      function showStatusDetails(details) {
+        const statusDetails = document.getElementById("status-details");
+
+        if (details.frames || details.currentFps || details.timemark) {
+          let detailsHtml = "Chi tiết: ";
+          if (details.timemark)
+            detailsHtml += `Thời gian: ${details.timemark} `;
+          if (details.frames) detailsHtml += `Khung hình: ${details.frames} `;
+          if (details.currentFps)
+            detailsHtml += `FPS: ${Math.round(details.currentFps)} `;
+          if (details.currentKbps)
+            detailsHtml += `Bitrate: ${Math.round(details.currentKbps)}kbps`;
+
+          statusDetails.innerHTML = detailsHtml;
+          statusDetails.style.display = "block";
+        }
+      }
+
+      // Reset progress
+      function resetProgress() {
+        updateProgress(0, "Đang xử lý...");
+        document.getElementById("status-details").style.display = "none";
+      }
+
+      // Reset UI
+      function resetUI(submitBtn = null) {
+        const progress = document.getElementById("progress");
+        progress.style.display = "none";
+
+        // Reset all submit buttons
+        document
+          .querySelectorAll('.btn[type="submit"], .btn[id$="submit"]')
+          .forEach((btn) => {
+            btn.disabled = false;
+            const originalText = btn.id.includes("url")
+              ? '<span class="emoji">🚀</span> Xử lý Video'
+              : '<span class="emoji">🚀</span> Xử lý Video';
+            btn.innerHTML = originalText;
+          });
       }
 
       // Show result function
@@ -463,6 +665,11 @@
         // Scroll to result
         result.scrollIntoView({ behavior: "smooth" });
       }
+
+      // Cleanup on page unload
+      window.addEventListener("beforeunload", () => {
+        stopStatusPolling();
+      });
     </script>
   </body>
 </html>

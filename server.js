@@ -80,7 +80,12 @@ async function downloadVideo(url, outputPath) {
 }
 
 // Encode video với preset cho social media
-function encodeVideo(inputPath, outputPath, preset = "tiktok") {
+function encodeVideo(
+  inputPath,
+  outputPath,
+  preset = "tiktok",
+  processId = null
+) {
   return new Promise((resolve, reject) => {
     let command = ffmpeg(inputPath);
 
@@ -138,17 +143,58 @@ function encodeVideo(inputPath, outputPath, preset = "tiktok") {
       .output(outputPath)
       .on("start", (commandLine) => {
         console.log("FFmpeg started:", commandLine);
+        // Cập nhật status khi bắt đầu
+        if (processId && activeProcesses.has(processId)) {
+          activeProcesses.set(processId, {
+            status: "encoding",
+            progress: 0,
+            message: "Bắt đầu encode video...",
+          });
+        }
       })
       .on("progress", (progress) => {
-        console.log("Progress:", progress.percent + "%");
-        // Có thể emit progress qua WebSocket sau này
+        const percent = Math.round(progress.percent || 0);
+        console.log(`Progress: ${percent}%`);
+
+        // CẬP NHẬT PROGRESS VÀO activeProcesses
+        if (processId && activeProcesses.has(processId)) {
+          activeProcesses.set(processId, {
+            status: "encoding",
+            progress: percent,
+            message: `Đang encode video... ${percent}%`,
+            details: {
+              frames: progress.frames,
+              currentFps: progress.currentFps,
+              currentKbps: progress.currentKbps,
+              targetSize: progress.targetSize,
+              timemark: progress.timemark,
+            },
+          });
+        }
       })
       .on("end", () => {
         console.log("Encoding finished");
+        // Cập nhật status khi hoàn thành
+        if (processId && activeProcesses.has(processId)) {
+          activeProcesses.set(processId, {
+            status: "completed",
+            progress: 100,
+            message: "Encode video hoàn thành!",
+          });
+        }
         resolve(outputPath);
       })
       .on("error", (err) => {
         console.error("FFmpeg error:", err);
+        // Cập nhật status khi có lỗi
+        if (processId && activeProcesses.has(processId)) {
+          activeProcesses.set(processId, {
+            status: "error",
+            progress: 0,
+            message: "Có lỗi xảy ra khi encode video",
+            error: err.message,
+          });
+        }
         reject(err);
       })
       .run();
@@ -168,32 +214,62 @@ app.post("/api/process-url", async (req, res) => {
     const tempInputPath = `./temp/${processId}-input.mp4`;
     const outputPath = `./outputs/${processId}-output-${preset}.mp4`;
 
-    // Track process
-    activeProcesses.set(processId, { status: "downloading", progress: 0 });
+    // Track process với thông tin chi tiết hơn
+    activeProcesses.set(processId, {
+      status: "downloading",
+      progress: 0,
+      message: "Đang tải video từ URL...",
+      preset: preset,
+    });
 
-    // Download video
-    console.log("Đang tải video từ URL...");
-    await downloadVideo(url, tempInputPath);
-
-    // Update status
-    activeProcesses.set(processId, { status: "encoding", progress: 0 });
-
-    // Encode video
-    console.log("Đang encode video...");
-    await encodeVideo(tempInputPath, outputPath, preset);
-
-    // Cleanup temp file
-    fs.removeSync(tempInputPath);
-
-    // Update status
-    activeProcesses.set(processId, { status: "completed", progress: 100 });
-
+    // Return processId ngay lập tức để client có thể polling
     res.json({
       success: true,
       processId: processId,
-      downloadUrl: `/download/${processId}-output-${preset}.mp4`,
-      message: `Video đã được encode thành công cho ${preset.toUpperCase()}!`,
+      message: "Bắt đầu xử lý video...",
     });
+
+    // Xử lý async trong background
+    (async () => {
+      try {
+        // Download video
+        console.log("Đang tải video từ URL...");
+        await downloadVideo(url, tempInputPath);
+
+        // Update status
+        activeProcesses.set(processId, {
+          status: "encoding",
+          progress: 0,
+          message: "Tải xuống hoàn thành, bắt đầu encode...",
+          preset: preset,
+        });
+
+        // Encode video với processId
+        console.log("Đang encode video...");
+        await encodeVideo(tempInputPath, outputPath, preset, processId);
+
+        // Cleanup temp file
+        fs.removeSync(tempInputPath);
+
+        // Update final status
+        activeProcesses.set(processId, {
+          status: "completed",
+          progress: 100,
+          message: `Video đã được encode thành công cho ${preset.toUpperCase()}!`,
+          downloadUrl: `/download/${processId}-output-${preset}.mp4`,
+          preset: preset,
+        });
+      } catch (error) {
+        console.error("Background processing error:", error);
+        activeProcesses.set(processId, {
+          status: "error",
+          progress: 0,
+          message: "Có lỗi xảy ra khi xử lý video",
+          error: error.message,
+          preset: preset,
+        });
+      }
+    })();
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({
@@ -216,24 +292,49 @@ app.post("/api/process-file", upload.single("video"), async (req, res) => {
     const outputPath = `./outputs/${processId}-output-${preset}.mp4`;
 
     // Track process
-    activeProcesses.set(processId, { status: "encoding", progress: 0 });
+    activeProcesses.set(processId, {
+      status: "encoding",
+      progress: 0,
+      message: "Bắt đầu encode video...",
+      preset: preset,
+    });
 
-    // Encode video
-    console.log("Đang encode video...");
-    await encodeVideo(inputPath, outputPath, preset);
-
-    // Cleanup input file
-    fs.removeSync(inputPath);
-
-    // Update status
-    activeProcesses.set(processId, { status: "completed", progress: 100 });
-
+    // Return processId ngay lập tức
     res.json({
       success: true,
       processId: processId,
-      downloadUrl: `/download/${processId}-output-${preset}.mp4`,
-      message: `Video đã được encode thành công cho ${preset.toUpperCase()}!`,
+      message: "Bắt đầu encode video...",
     });
+
+    // Xử lý async trong background
+    (async () => {
+      try {
+        // Encode video với processId
+        console.log("Đang encode video...");
+        await encodeVideo(inputPath, outputPath, preset, processId);
+
+        // Cleanup input file
+        fs.removeSync(inputPath);
+
+        // Update final status
+        activeProcesses.set(processId, {
+          status: "completed",
+          progress: 100,
+          message: `Video đã được encode thành công cho ${preset.toUpperCase()}!`,
+          downloadUrl: `/download/${processId}-output-${preset}.mp4`,
+          preset: preset,
+        });
+      } catch (error) {
+        console.error("Background processing error:", error);
+        activeProcesses.set(processId, {
+          status: "error",
+          progress: 0,
+          message: "Có lỗi xảy ra khi encode video",
+          error: error.message,
+          preset: preset,
+        });
+      }
+    })();
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({
